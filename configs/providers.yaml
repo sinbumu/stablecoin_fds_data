@@ -1,0 +1,16 @@
+gcp:
+  project: stablecoin-fds
+  gcs:
+    raw_bucket: gs://stablecoin-fds-raw
+    processed_bucket: gs://stablecoin-fds-processed
+  bigquery:
+    dataset: stablecoin_fds
+providers:
+  ethereum:
+    rpc_url: 
+    etherscan_api_key: 
+  bsc:
+    rpc_url: 
+    bscscan_api_key: 
+  tron:
+    api_key: 

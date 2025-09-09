@@ -1,0 +1,20 @@
+version: '3.8'
+services:
+  app:
+    build: ..
+    env_file: ../.env
+    volumes:
+      - ..:/app
+      - ${HOME}/.config/gcloud:/root/.config/gcloud
+    working_dir: /app
+    command: bash
+  jupyter:
+    build: ..
+    env_file: ../.env
+    ports:
+      - "8888:8888"
+    volumes:
+      - ..:/app
+      - ${HOME}/.config/gcloud:/root/.config/gcloud
+    working_dir: /app
+    command: jupyter lab --ip=0.0.0.0 --no-browser --allow-root
