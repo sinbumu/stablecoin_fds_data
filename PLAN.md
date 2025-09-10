@@ -1,297 +1,315 @@
-좋아! Notion에 바로 올리기 좋은 **페이지 템플릿**이랑, 네 GitHub 저장소(`sinbumu/stablecoin_fds_data`) 기준 **폴더 구조/스크립트 배치안**까지 한 번에 정리해줄게. (목표: 9/13까지 “원시데이터 수집 + 1차 전처리/인덱싱” 준비 완료)
+아래는 **Ethereum 단독 수집**을 전제로 한, 저장소 루트에 넣을 **`PLAN.md`** 초안입니다. 그대로 붙여 넣고 필요에 맞게 수정하면 됩니다.
 
 ---
 
-# (Notion 템플릿) Stablecoin FDS — 빅데이터 수집·전처리 계획
+# PLAN.md — Stablecoin FDS 데이터 수집·전처리 계획 (Ethereum Only)
 
-## 0. 요약
-
-* **대상 토큰**: USDT, USDC, DAI
-* **대상 체인**: Ethereum, BSC, Tron *(EVM: ETH/BSC, 비EVM: Tron)*
-* **DEX 컨텍스트**: Uniswap(v2/v3), Curve, PancakeSwap(보조)
-* **수집 경로**:
-
-  * 과거 대량: **BigQuery**(ETH/Tron) + **Cryo+RPC**(BSC/보완)
-  * 실시간/보조: **Etherscan/BscScan/TronScan API**, **The Graph(Subgraph)**
-* **저장/분석 인프라**: **GCS(Google Cloud Storage)** + **BigQuery**
-* **산출물(9/13 전)**:
-
-  1. 원시 전송 로그(체인×토큰) Parquet/CSV,
-  2. 통일 스키마 테이블(정규화),
-  3. 주소 라벨링 초안(CEX/DEX/발행사),
-  4. 일별 집계(카테고리별 In/Out) 1차본
+> 목적: **석사 논문(1–2개월)** 내 마무리를 위해, **Ethereum 메인넷**에서 **USDT/USDC/DAI**의 전송 및 DEX 컨텍스트 데이터를 **빠르고 재현 가능하게** 수집·정제하여, **Pre-Sign FDS(디페그·동결 이중 리스크)** 연구에 필요한 학습/평가용 빅데이터를 구축한다.
 
 ---
 
-## 1. 범위 & 목표
+## 0) 개요 요약
 
-* **목표**: FDS용 **Pre-Sign(서명 전)** 분석을 위한 **원시데이터 확보 + 1차 전처리/인덱싱**
-* **범위**: 2023–현재(최소 1년) — USDC(23.03 디페그), USDT(Curve 3pool 불균형) 포함
+* **체인 범위**: Ethereum **단독** (EVM, BigQuery 공개데이터 활용 → 빠르고 안정적)
+* **토큰 범위**: **USDT(ERC-20), USDC(ERC-20), DAI**
+* **기간 권장**: `2023-01-01` \~ `현재` (최소 12–20개월 커버; 필요 시 `2024-01-01`\~현재로 축소 가능)
+* **핵심 산출물(9/13 마감용)**
 
----
-
-## 2. 데이터 소스 & 선택 기준
-
-* **BigQuery**: `crypto_ethereum.token_transfers` 등 → ETH/Tron 과거 로그 대량 추출에 최적
-* **Cryo CLI + RPC**: 계약별 `eth_getLogs` 대량 ETL(Parquet 저장, ETH/BSC 모두 OK)
-* **Explorer/API**: Etherscan/BscScan/TronScan 페이징(백업/부분 보완)
-* **Subgraph**: Uniswap/Curve/PancakeSwap GraphQL(스왑/풀 메타데이터 보강)
-
----
-
-## 3. GCP 인프라 (권장 표준)
-
-* **프로젝트**: `stablecoin-fds` *(예시)*
-* **GCS 버킷**: `gs://stablecoin-fds-raw` (원시), `gs://stablecoin-fds-processed` (전처리)
-
-  * 경로 규칙: `raw/chain=<eth|bsc|tron>/token=<usdt|usdc|dai>/date=YYYY-MM-DD/*.parquet`
-* **BigQuery 데이터셋**: `stablecoin_fds`
-
-  * 테이블 예:
-
-    * `raw_token_transfers` (파티션: `DATE(block_timestamp)`)
-    * `std_token_transfers` (정규화 스키마)
-    * `addr_labels` (주소 라벨 맵)
-    * `daily_flows` (일별 집계: CEX/DEX/Direct × In/Out)
+  1. 원시 전송 로그(3토큰) Parquet/CSV (GCS 저장)
+  2. 표준화 스키마 테이블(정규화, decimals 적용)
+  3. 주소 라벨링 초안(CEX/DEX 풀·라우터·발행사/트레저리)
+  4. 일/시간 단위 집계표(카테고리별 In/Out)
+  5. 사건 리플레이 샘플(예: 2023-03 USDC 디페그) 시각화 노트북
 
 ---
 
-## 4. 수집 파이프라인(실행 플로우)
+## 1) 아키텍처 & 스택
 
-### 4.1 과거 덤프(우선)
+```
+[BigQuery Public Datasets]  →  [GCS 버킷(raw/processed)]  →  [BigQuery(표준화·집계)]
+          │                              │                           │
+          └─(SQL 추출/Export)            └─(Parquet 저장)           └─(분석/시각화/모델 피처)
+```
 
-1. **ETH/Tron → BigQuery 쿼리**로 토큰별 전송 로그 추출 → **GCS로 내보내기**
-2. **BSC → Cryo+RPC**로 컨트랙트별 `Transfer` 이벤트 파싱 → **GCS 업로드**
-3. (옵션) Explorer/API로 **누락 구간** 보완(블록 범위로 페이징)
+* **수집층**: BigQuery 공개 데이터셋(`crypto_ethereum.token_transfers` / 필요 시 `logs`)
+* **저장층**: **GCS** 버킷
 
-### 4.2 DEX 컨텍스트 보강(선택)
-
-* Subgraph로 **스왑/풀 정보** 조회 → 풀/라우터 주소 리스트 갱신 → 전송 레코드에 **DEX 태그** 합치기
-
----
-
-## 5. 스키마(표준화)
-
-### 5.1 원시 → 표준 스키마
-
-* 필드(예):
-
-  ```
-  ts (UTC), chain (eth|bsc|tron), tx_hash, log_index,
-  from_addr, to_addr, token (usdt|usdc|dai),
-  amount_raw, decimals, amount_norm (decimal 통일), block_number
-  ```
-* **정규화**: `amount_norm = amount_raw / 10^decimals` *(USDC=6, DAI=18 유의)*
-
-### 5.2 컨텍스트 태그
-
-* `from_type`/`to_type`: {CEX, DEX\_POOL, DEX\_ROUTER, USER, ISSUER, TREASURY, PROTOCOL}
-* `category`: {DIRECT\_TRANSFER, DEX\_SWAP, DEFI\_OTHER}
-* `direction`: {CEX\_IN, CEX\_OUT, DEX\_IN, DEX\_OUT, P2P}
+  * `gs://stablecoin-fds-raw/` (원시)
+  * `gs://stablecoin-fds-processed/` (표준화/집계)
+* **분석층**: **BigQuery**(파티션/클러스터링) + 노트북(Colab/Local)
 
 ---
 
-## 6. 전처리/인덱싱
-
-* **주소 인덱스**: 주소→(입출금 총액/건수, 최근활동시각, 고유상대수)
-* **주소 라벨링**: Etherscan/BscScan/TronScan 라벨 + 수동 큐레이션 → `addr_labels`
-* **집계**: 일/시간 단위 `daily_flows`(체인×토큰×카테고리×방향)
-* **그래프 준비(확장)**: 주소=노드, 전송=에지(시간/금액 속성) — 차수/근접도 계산 기반
-
----
-
-## 7. 검증(샘플)
-
-* **타임존/중복/결측** 점검
-* **사건 리플레이**: 2023-03 USDC 디페그, USDT 3pool 불균형 — 스파이크/흐름 확인
-* **라벨 샘플링**: CEX/DEX 풀/라우터 라벨 정확도 수기 점검
-
----
-
-## 8. 보안/권한/비용
-
-* **IAM**: 수집용 SA에 GCS(Object Admin) & BQ(Data Editor) 최소 권한
-* **비용**: BQ 쿼리시 **파티션 필터** 필수, GCS는 **Parquet**로 압축 저장
-* **키/비밀**: `.env`로 분리(Etherscan/BscScan 키, RPC URL 등)
-
----
-
-## 9. 일정(마일스톤)
-
-* **D-3**: GCS/BQ 세팅, 계약주소/소수점 고정(`contracts.yaml`)
-* **D-2**: ETH/Tron 덤프 완료, BSC Cryo 수집 시작
-* **D-1**: 스키마 정규화, 주소 라벨 초안, 일별 집계 생성
-* **D-day(9/13)**: 검증(사건 리플레이 차트/표) + 산출물 목록화
-
----
-
-# (Repo 가이드) `sinbumu/stablecoin_fds_data` 구조/스크립트
+## 2) 리포지토리 구조 (이 저장소 기준)
 
 ```
 stablecoin_fds_data/
+├─ PLAN.md
 ├─ README.md
-├─ .env.example                     # API 키/RPC URL 템플릿
+├─ .env.example
 ├─ configs/
-│  ├─ contracts.yaml               # 체인×토큰 컨트랙트주소, decimals
-│  ├─ providers.yaml               # RPC/서브그래프/키 설정
-│  └─ labels_seed.csv              # 초기 주소 라벨(수동 큐레이션)
+│  ├─ ethereum_only.yaml         # 토큰 주소/decimals/기간
+│  ├─ providers.yaml             # (옵션) API 키/서브그래프 엔드포인트
+│  └─ labels_seed.csv            # 주소 라벨 시드(CEX/DEX/발행사…)
 ├─ ingest/
-│  ├─ bigquery/
-│  │  ├─ sql/
-│  │  │  ├─ eth_usdc_transfers.sql
-│  │  │  ├─ eth_usdt_transfers.sql
-│  │  │  └─ eth_dai_transfers.sql
-│  │  └─ export_to_gcs.sh         # BQ→GCS 내보내기 스크립트
-│  ├─ cryo/
-│  │  ├─ run_cryo_eth.sh
-│  │  ├─ run_cryo_bsc.sh
-│  │  └─ README.md
-│  └─ tron/
-│     ├─ tronscan_pull.py         # TRC-20 페이징 수집(기간 슬라이싱)
-│     └─ README.md
+│  └─ bigquery/
+│     ├─ sql/
+│     │  └─ eth_stable_transfers.sql
+│     └─ export_to_gcs.sh        # BQ → GCS Parquet 내보내기
 ├─ processing/
-│  ├─ standardize.py              # 스키마 통일/소수점 정규화
-│  ├─ label_merge.py              # explorer 라벨 병합
-│  ├─ classify_context.py         # DIRECT/DEX, In/Out 태깅
-│  └─ aggregate_daily.py          # 일별 집계 테이블 생성
+│  ├─ standardize.py             # 스키마 통일/amount_norm 계산
+│  ├─ label_merge.py             # 라벨 병합(Etherscan 등)
+│  ├─ classify_context.py        # DIRECT/DEX + In/Out 태깅
+│  ├─ aggregate_daily.py         # 일/시간 집계 생성
+│  └─ feature_specs.md           # PRS/CRS 피처 목록 정의
 ├─ notebooks/
-│  ├─ sanity_checks.ipynb         # 데이터 품질 점검
-│  └─ event_replay.ipynb          # 사건 리플레이(USDC/USDT)
-├─ docker/
-│  ├─ Dockerfile
-│  └─ docker-compose.yml
+│  ├─ sanity_checks.ipynb        # 품질 점검
+│  └─ event_replay.ipynb         # 사건 리플레이(USDC 2023-03 등)
 └─ bin/
-   ├─ gcs_sync.sh                 # 로컬→GCS 동기화
-   └─ bq_load.sh                  # GCS→BQ 로드(파티션)
+   ├─ gcs_sync.sh                # 로컬→GCS 동기화
+   └─ bq_load.sh                 # GCS→BQ 로드(파티션)
 ```
 
-### 핵심 파일 설명
+---
 
-* **`configs/contracts.yaml`**
+## 3) 설정 파일
 
-  ```yaml
-  ethereum:
-    usdc: { address: "0xA0b8...6eB48", decimals: 6 }
-    usdt: { address: "0xdAC1...ec7", decimals: 6 }
-    dai:  { address: "0x6B17...271d0F", decimals: 18 }
-  bsc:
-    usdt: { address: "0x55d3...97955", decimals: 18 }
-    usdc: { address: "<BSC_USDC>", decimals: 18 }
-    dai:  { address: "<BSC_DAI>", decimals: 18 }
-  tron:
-    usdt: { address: "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t", decimals: 6 }
-  ```
+### 3.1 `configs/ethereum_only.yaml` (예시)
 
-  *(정확 주소는 공식 문서 기준으로 고정. 커밋에 명시)*
+```yaml
+ethereum:
+  start_date: "2023-01-01"
+  end_date: null  # 현재 시점까지
+  tokens:
+    usdc:
+      address: "0xA0b86991c6218b36c1d19d4a2e9Eb0cE3606eB48"
+      decimals: 6
+    usdt:
+      address: "0xdAC17F958D2ee523a2206206994597C13D831ec7"
+      decimals: 6
+    dai:
+      address: "0x6B175474E89094C44Da98b954EedeAC495271d0F"
+      decimals: 18
+```
 
-* **`ingest/bigquery/sql/eth_usdc_transfers.sql` (예시)**
+> **주의**: 주소/decimals는 공식 문서/검증된 소스로 고정 후 커밋.
 
-  ```sql
-  SELECT block_timestamp AS ts,
-         transaction_hash AS tx_hash,
-         from_address AS from_addr,
-         to_address   AS to_addr,
-         'usdc'       AS token,
-         value        AS amount_raw,
-         6            AS decimals,
-         block_number
-  FROM `bigquery-public-data.crypto_ethereum.token_transfers`
-  WHERE token_address = '0xA0b86991c6218b36c1d19d4a2e9Eb0cE3606eB48'
-    AND block_timestamp >= TIMESTAMP('2023-01-01');
-  ```
+### 3.2 `.env.example`
 
-* **`ingest/cryo/run_cryo_bsc.sh` (예시)**
-
-  ```bash
-  #!/usr/bin/env bash
-  set -euo pipefail
-  export ETH_RPC_URL=${BSC_RPC_URL} # .env에서 로드
-  TOKEN_ADDR="0x55d398326f99059fF775485246999027B3197955" # USDT(BSC)
-  OUT="out/bsc/usdt"
-  mkdir -p "$OUT"
-  cryo logs \
-    --contract ${TOKEN_ADDR} \
-    -b 25000000:latest \
-    --requests-per-second 5 \
-    --max-concurrent-requests 5 \
-    --parquet ${OUT}/bsc_usdt_logs.parquet
-  ```
-
-* **`ingest/tron/tronscan_pull.py` (예시 스켈레톤)**
-
-  ```python
-  import requests, time, csv, os
-  BASE = "https://apilist.tronscanapi.com/api/token_trc20/transfers"
-  CONTR = os.environ["TRON_USDT"]  # configs에서 주입
-  def pull(start_ts, end_ts, out_csv):
-      start, limit, page = start_ts, 200, 0
-      with open(out_csv, "w", newline="") as f:
-          w = csv.writer(f); w.writerow(["ts","tx_hash","from","to","amount_raw","decimals","block"])
-          while True:
-              url = f"{BASE}?contract_address={CONTR}&limit={limit}&start={page}&start_timestamp={start}&end_timestamp={end_ts}"
-              j = requests.get(url, timeout=30).json()
-              rows = j.get("token_transfers", [])
-              if not rows: break
-              for r in rows:
-                  w.writerow([r["block_ts"], r["transaction_id"], r["from_address"], r["to_address"], r["quant"], 6, r["block"]])
-              page += limit; time.sleep(0.3)
-  ```
-
-* **`processing/standardize.py` (핵심 로직 요지)**
-
-  * 입력: 체인×토큰별 원시 파일 → 공통 스키마로 변환, `amount_norm` 계산, `ts`을 UTC로 통일
-  * 출력: `gs://stablecoin-fds-processed/std/chain=.../token=.../date=.../*.parquet`
-
-* **`processing/classify_context.py`**
-
-  * 라벨 소스(`addr_labels`): CEX/DEX\_POOL/DEX\_ROUTER/ISSUER/…
-  * 규칙: `from_addr`/`to_addr`에 라벨 매칭 → `category`/`direction` 필드 생성
-
-* **`processing/aggregate_daily.py`**
-
-  * `std_token_transfers` → 그룹바이(`DATE(ts), chain, token, category, direction`) → `daily_flows` 테이블 생성
+```
+GCP_PROJECT=stablecoin-fds
+GCS_BUCKET_RAW=stablecoin-fds-raw
+GCS_BUCKET_PROCESSED=stablecoin-fds-processed
+BQ_DATASET=stablecoin_fds
+```
 
 ---
 
-## GCS/BQ 워크플로(명령 예시)
+## 4) 수집 단계 (Ethereum Only)
 
-* **로컬 → GCS 업로드**
+### 4.1 BigQuery 쿼리 (토큰 전송 로그 추출)
 
-  ```bash
-  gsutil -m rsync -r out/ gs://stablecoin-fds-raw/raw/
-  ```
-* **GCS → BigQuery 로드(파티션)**
+`ingest/bigquery/sql/eth_stable_transfers.sql`
 
-  ```bash
-  bq load --source_format=PARQUET \
-    --time_partitioning_field ts \
-    stablecoin_fds.raw_token_transfers \
-    gs://stablecoin-fds-raw/raw/chain=eth/token=usdc/*.parquet
-  ```
+```sql
+-- Ethereum: USDC/USDT/DAI 전송 로그 (2023-01-01 이후)
+SELECT
+  block_timestamp AS ts,
+  transaction_hash AS tx_hash,
+  token_address,
+  from_address AS from_addr,
+  to_address   AS to_addr,
+  value        AS amount_raw,
+  block_number
+FROM `bigquery-public-data.crypto_ethereum.token_transfers`
+WHERE token_address IN (
+  '0xA0b86991c6218b36c1d19d4a2e9Eb0cE3606eB48', -- USDC
+  '0xdAC17F958D2ee523a2206206994597C13D831ec7', -- USDT
+  '0x6B175474E89094C44Da98b954EedeAC495271d0F'  -- DAI
+)
+AND block_timestamp >= TIMESTAMP('2023-01-01');
+```
+
+* **확장**: 필요 시 `logs` 테이블에서 **블랙리스트/동결 이벤트**(USDT/USDC) topic으로 추가 추출.
+
+### 4.2 BigQuery → GCS 내보내기
+
+`ingest/bigquery/export_to_gcs.sh` (예시)
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT=${GCP_PROJECT}
+DATASET_TEMP="${BQ_DATASET}_temp"
+TABLE_SRC="bigquery-public-data.crypto_ethereum.token_transfers"
+TABLE_OUT="${DATASET_TEMP}.eth_stable_transfers_2023p"
+
+# 1) 임시 테이블 생성
+bq --project_id="$PROJECT" query --use_legacy_sql=false \
+  --destination_table="$TABLE_OUT" --replace=true \
+  "$(cat ingest/bigquery/sql/eth_stable_transfers.sql)"
+
+# 2) GCS로 내보내기 (Parquet)
+gsutil -m rm -r gs://${GCS_BUCKET_RAW}/raw/chain=eth/**
+bq --project_id="$PROJECT" extract \
+  --destination_format=PARQUET \
+  "$TABLE_OUT" \
+  gs://${GCS_BUCKET_RAW}/raw/chain=eth/token=stable/date=2023p/*.parquet
+```
+
+> **주의**: 실제 운영에선 토큰별/월별 파티션으로 나눠 내보내는 것을 권장.
 
 ---
 
-## 체크리스트(9/13 기준)
+## 5) 표준화·라벨링·집계
 
-* [ ] **GCS 버킷/BigQuery 데이터셋 생성**
-* [ ] **contracts.yaml**(주소/decimals) 고정 & 커밋
-* [ ] **ETH/Tron** 과거 전송 로그 추출 → GCS 적재 → BQ 로드
-* [ ] **BSC** Cryo 수집 → GCS 적재 → BQ 로드
-* [ ] **standardize.py** 실행(정규화·통일 스키마)
-* [ ] **label\_merge.py**(CEX/DEX/발행사 라벨) 적용
-* [ ] **classify\_context.py**(Direct/DEX, In/Out 태깅)
-* [ ] **aggregate\_daily.py**(일별 집계)
-* [ ] **notebooks/event\_replay.ipynb**로 USDC(2023-03) 등 사건 리플레이 확인
+### 5.1 표준 스키마 정의
+
+출력 테이블(또는 Parquet)의 공통 필드:
+
+```
+ts(UTC timestamp), chain='eth', tx_hash, log_index (옵션),
+token ∈ {usdt, usdc, dai}, token_address,
+from_addr, to_addr,
+amount_raw (uint), decimals, amount_norm (double), block_number
+```
+
+* **정규화**: `amount_norm = amount_raw / 10^decimals`
+
+`processing/standardize.py` 수행 결과는 GCS `processed/std/` 및 BQ `stablecoin_fds.std_token_transfers`로 저장.
+
+### 5.2 주소 라벨링
+
+* `configs/labels_seed.csv`에 **CEX(핫월렛/입금)**, **DEX 풀/라우터(유니스왑/커브)**, **발행사/트레저리**, **주요 프로토콜** 등 핵심 주소를 수기/반자동 수집.
+* `processing/label_merge.py`로 라벨 머지 → `from_type`/`to_type` 부여.
+
+라벨 예시 컬럼:
+
+```
+address, label, type
+0x..., BINANCE_HOT, CEX
+0x..., UNISWAP_V3_POOL_USDC/ETH, DEX_POOL
+0x..., UNISWAP_V3_ROUTER, DEX_ROUTER
+0x..., CIRCLE_TREASURY, ISSUER
+```
+
+### 5.3 컨텍스트 분류 & 방향성 태깅
+
+`processing/classify_context.py`:
+
+* `category`: {`DIRECT_TRANSFER`, `DEX_SWAP`, `DEFI_OTHER`}
+
+  * 규칙: 풀/라우터 주소 관여 시 `DEX_SWAP`, 그 외 직접 전송은 `DIRECT_TRANSFER`
+* `direction`: {`CEX_IN`, `CEX_OUT`, `DEX_IN`, `DEX_OUT`, `P2P`}
+
+  * 예: `to_type=CEX` → `CEX_IN`, `from_type=DEX_POOL` → `DEX_OUT`
+
+### 5.4 일/시간 집계
+
+`processing/aggregate_daily.py`:
+
+* 그룹바이: `DATE(ts), token, category, direction` (+ 옵션: `from_type`, `to_type`)
+* 메트릭: `tx_count`, `volume_sum(amount_norm)`, `unique_addr`
+
+출력: `stablecoin_fds.daily_flows`
 
 ---
 
-## 리스크 & 대응
+## 6) FDS 연구용 피처(요약)
 
-* **API/RPC 레이트리밋** → 블록 범위/시간 분할, 재시도 백오프
-* **데이터 용량** → Parquet 압축, 파티션 설계, BQ 파티션 필터 사용
-* **주소 라벨 정확도** → 핵심 주소(주요 CEX/DEX/발행사)는 수기 검증 로그 유지
-* **Tron 편차(전송량 과다)** → 기간 슬라이싱, 일단 USDT 우선
+`processing/feature_specs.md`에 상세 정의. 여기서는 핵심만:
+
+### 6.1 PRS(디페그 노출도) 후보 피처
+
+* DEX 풀 상태(유니스왑/커브): 풀 비중/깊이/가상가격(virtual price), 최근 N분 **유출속도**, 예상 **슬리피지**(고정 주문 크기 기준)
+* **오라클-현물 괴리**(가능 시), **DEX-CEX 스프레드**(옵션)
+* 시계열 랙(5m/30m) 및 변동성
+
+### 6.2 CRS(동결/검열 위험) 후보 피처
+
+* **동결/블랙리스트 이벤트** 전후 윈도우 내 거래/주소
+* **그래프 근접도**(제재/악성 라벨과의 거리), 허브성/전파도
+* **allowance 급변**, 신규주소 연쇄, 라우팅 난독화 지표
+
+> 초기 9/13 마감 전에는 **데이터 기반** 마련(표준화/라벨/집계)까지가 목표, 이후 학습·추론은 2주차\~.
 
 ---
 
-필요하면 위 구조로 **초기 스크립트 골격**(실행 가능한 버전)까지 더 자세히 적어줄게—`.env` 포맷, 도커 실행, BQ 쿼리 템플릿 등.
+## 7) 일정(1–2개월 내 완결 목표)
+
+### 9/13 마감 전 (Week 1)
+
+* Day 1: GCP 프로젝트/권한, GCS/BQ 생성, `configs/ethereum_only.yaml` 확정
+* Day 2–3: **BigQuery 추출 → GCS Parquet 내보내기**, 표본 검증
+* Day 4: `standardize.py` 실행(정규화/스키마 통일), 중복/타임존/결측 체크
+* Day 5: `labels_seed.csv` 초안 작성 → `label_merge.py` → `classify_context.py`
+* Day 6: `aggregate_daily.py`로 집계 생성
+* Day 7: `event_replay.ipynb`로 **USDC 2023-03** 사건 리플레이(스파이크 확인)
+
+### 이후 3–6주
+
+* Week 2–3: **PRS/CRS 피처 구현** + 베이스라인 모델(XGBoost/LGBM) → SHAP 설명
+* Week 4: **리플레이 평가**(PR-AUC, Recall\@FPR=1%, 리드타임), 오류 분석
+* Week 5: **Pre-Sign API** 목업(지연 p95 측정), 경고 정책 튜닝
+* Week 6: 결과 도표/표 정리, 본문 작성(한계/확장: 멀티체인)
+
+---
+
+## 8) 비용·성능 가이드 (Ethereum Only)
+
+* **BigQuery 쿼리**: `$5/TB` — 파티션/필터 최적화 시 **두 자릿수 \$/월**
+* **GCS 저장**: `$0.02/GB·월` — Parquet 압축으로 수\~수십 GB 관리
+* **성능 팁**
+
+  * BQ 테이블 **파티셔닝**(DATE(ts)), **클러스터링**(`token_address`, `from_address`)
+  * 내보내기/로딩은 토큰×월 단위로 나누어 배치 처리
+
+---
+
+## 9) 품질·거버넌스
+
+* **재현성**: 모든 쿼리/스크립트 **버전 고정**(커밋), 실행 로그 남기기
+* **라벨 신뢰성**: 핵심 주소(CEX/DEX/발행사)는 **수기 검증** 후 `labels_seed.csv`에 주석
+* **커버리지 메타**: 시작/끝 블록, 행 수, 누락 구간 기록(`README.md`에 테이블로 요약)
+
+---
+
+## 10) 마일스톤별 산출물 체크리스트
+
+* [ ] `raw/` Parquet (eth, usdt/usdc/dai, 기간별 파티션) @ GCS
+* [ ] `std_token_transfers` (정규화) @ BQ
+* [ ] `addr_labels` (라벨 맵) @ BQ
+* [ ] `daily_flows` (집계) @ BQ
+* [ ] 리플레이 노트북(USDC 2023-03) 실행 스크린샷/PNG
+* [ ] `feature_specs.md` 초안(PR S/CRS 피처 테이블)
+
+---
+
+## 부록 A) 실무 명령 예시
+
+### A.1 로컬 → GCS 동기화
+
+```bash
+./bin/gcs_sync.sh out/ gs://$GCS_BUCKET_RAW/raw/
+```
+
+### A.2 GCS → BigQuery 로드(파티션)
+
+```bash
+bq load --source_format=PARQUET \
+  --time_partitioning_field ts \
+  $BQ_DATASET.std_token_transfers \
+  gs://$GCS_BUCKET_PROCESSED/std/chain=eth/token=*/date=*/part-*.parquet
+```
+
+---
+
+## 부록 B) 논문 영향도 메모
+
+* **Ethereum 단독**이어도: Uniswap/Curve 중심의 **DEX 유동성/가격 신호**와 **USDT/USDC 동결 이벤트**를 충분히 커버 → \*\*Pre-Sign FDS(PRS+CRS)\*\*의 **핵심 검증**에 차질 없음.
+* **한계 서술**: 멀티체인 일반화(Tron/BSC)는 후속 확장으로 명시.
+
+---
+
+**결론**: 본 계획은 \*\*빠른 수집(1주 내)\*\*과 **재현 가능한 파이프라인**에 초점을 둡니다. Ethereum 단독으로도 **충분한 학술 기여**(데이터셋 구축, 피처 설계, 실시간 제약하 성능 검증)가 가능합니다.
