@@ -4,7 +4,7 @@ ethereum:
   dai:  { address: '0x6B175474E89094C44Da98b954EedeAC495271d0F', decimals: 18 }
 bsc:
   usdt: { address: '0x55d398326f99059fF775485246999027B3197955', decimals: 18 }
-  usdc: { address: '<BSC_USDC>', decimals: 18 }
-  dai:  { address: '<BSC_DAI>', decimals: 18 }
+  usdc: { address: '0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d', decimals: 18 }
+  dai:  { address: '0x1AF3F329e8BE154074D8769D1FFa4eE058B1DBc3', decimals: 18 }
 tron:
   usdt: { address: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', decimals: 6 }
