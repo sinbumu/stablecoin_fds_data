@@ -7,10 +7,21 @@ if [ -f .env ]; then set -a; . ./.env; set +a; fi
 
 mkdir -p out/std/eth out/labeled/eth out/classified/eth out/agg out/logs
 
+COUNT=${COUNT:-}
 LIST=$(gcloud storage ls gs://$GCS_BUCKET_RAW/raw/chain=eth/token=stable/date=2023p/)
+if [ -n "$COUNT" ]; then
+  echo "[info] incremental COUNT limit: $COUNT"
+  LIST=$(echo "$LIST" | head -n "$COUNT")
+fi
 
 # 부분 집계 누적 파일
 AGG_TMP=out/agg/daily_flows_incremental.parquet
+
+# CLEAR_AGG=1 이면 기존 누적 집계 초기화
+if [ "${CLEAR_AGG:-0}" = "1" ] && [ -f "$AGG_TMP" ]; then
+  rm -f "$AGG_TMP"
+  echo "[info] cleared previous incremental aggregate: $AGG_TMP"
+fi
 
 # 1) 표준화/라벨/분류를 파일 단위로 처리하면서, 즉시 부분 집계 생성 및 누적
 for f in $LIST; do
