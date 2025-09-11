@@ -105,3 +105,23 @@ bash bin/bq_load.sh raw_token_transfers gs://$GCS_BUCKET_RAW/raw/chain=eth/token
 ```bash
 bash bin/process_all_incremental.sh
 ```
+
+## 9) bin 스크립트 가이드
+- process_small.sh: GCS 원시 상위 N개만 로컬 파이프라인 실행(표준화→라벨→분류→샘플 집계)
+  - 기본 N=10, 변경: `COUNT=50 bash bin/process_small.sh`
+  - 로그: `out/logs/process_small.log`
+- process_all.sh: 전체 파일 대상 일괄 처리(메모리/디스크 여유 필요)
+  - `bash bin/process_all.sh`
+  - 로그: `out/logs/process_all.log`
+- process_all_incremental.sh: 파일 단위 부분 집계→누적 병합(대용량 안전)
+  - 스몰 테스트: `CLEAR_AGG=1 COUNT=50 bash bin/process_all_incremental.sh`
+  - 누적 확장: `COUNT=200 bash bin/process_all_incremental.sh`
+  - 전체 실행: `bash bin/process_all_incremental.sh`
+  - 로그: `out/logs/process_all_incremental.log`
+- check_outputs.sh: 산출물 점검(파일 수/스키마/라벨 커버리지/카테고리 분포/용량)
+  - `bash bin/check_outputs.sh`
+- bq_load.sh: GCS Parquet → BigQuery 로드(파티션/클러스터 지정 가능)
+  - `bash bin/bq_load.sh <table> <gs://uri/*.parquet> [partition_field] [cluster_fields_csv]`
+  - 예: `bash bin/bq_load.sh std_token_transfers gs://$GCS_BUCKET_PROCESSED/std/chain=eth/token=*/date=*/*.parquet ts token,from_addr,to_addr`
+- gcs_sync.sh(옵션): 로컬 디렉터리 → GCS 동기화(gsutil 기반). 최신 권장은 `gcloud storage cp/rsync`.
+  - 예: `gcloud storage cp out/agg/daily_flows.parquet gs://$GCS_BUCKET_PROCESSED/std/chain=eth/agg/`
