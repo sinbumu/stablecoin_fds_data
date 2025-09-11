@@ -6,7 +6,7 @@ def aggregate(input_path: str, out_path: str):
     df = pd.read_parquet(input_path) if input_path.endswith('.parquet') else pd.read_csv(input_path)
     df['date'] = pd.to_datetime(df['ts']).dt.tz_convert('UTC').dt.date if hasattr(pd.to_datetime(df['ts']), 'dt') else pd.to_datetime(df['ts']).dt.date
     group_cols = ['date','chain','token','category','direction']
-    agg = df.groupby(group_cols, dropna=False).agg(
+    agg = df.groupby(group_cols, dropna=False, observed=False).agg(
         tx_count=('tx_hash','nunique'),
         total_amount=('amount_norm','sum')
     ).reset_index()
