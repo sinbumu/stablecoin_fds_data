@@ -72,11 +72,12 @@ python3 processing/aggregate_daily.py \
 GCS/BQ 적재
 ```bash
 # 로컬→GCS 동기화 (원시/표준화 산출물 경로에 맞춰 실행)
-bash bin/gcs_sync.sh
+# (선택) gcloud storage 권장
+gcloud storage cp out/std/eth/stable_2023.parquet gs://$GCS_BUCKET_PROCESSED/std/chain=eth/token=stable/date=2023p/
 
 # GCS→BigQuery 로드(예)
 echo $GCP_PROJECT
-bash bin/bq_load.sh raw_token_transfers gs://$GCS_BUCKET_RAW/raw/chain=eth/token=stable/date=2023p/*.parquet
+bash bin/bq_load.sh raw_token_transfers gs://$GCS_BUCKET_RAW/raw/chain=eth/token=stable/date=2023p/*.parquet ts token,from_addr,to_addr
 ```
 
 ## 5) 품질/검증
