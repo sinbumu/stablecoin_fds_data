@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 0) .env 자동 로드(존재 시). export(-a)로 환경변수 승격
+if [ -f ".env" ]; then
+  set -a
+  . ".env"
+  set +a
+fi
+
 : "${GCP_PROJECT:?set in env}"
 : "${GCS_BUCKET_RAW:?bucket name (no gs://)}"
 DS=${BQ_DATASET:-stablecoin_fds}
