@@ -2,6 +2,25 @@
 
 본 문서는 본 저장소를 구동하기 위해 필요한 GCP 설정(프로젝트/버킷/데이터셋/권한)과 인증 방법(로컬/도커/CI)을 정리합니다.
 
+## 0. Google Cloud CLI 설치 (macOS)
+- Homebrew 설치 후 CLI 설치:
+```bash
+brew update
+brew install --cask google-cloud-sdk  # 또는: brew install google-cloud-sdk
+```
+- 터미널 재시작 후 버전 확인 및 초기화:
+```bash
+gcloud --version
+gcloud init  # 계정/프로젝트/리전을 대화식으로 설정(옵션)
+```
+- BigQuery/Storage 클라이언트용 Application Default Credentials(ADC) 설정:
+```bash
+gcloud auth login
+gcloud auth application-default login
+```
+
+참고: Cloud Storage는 gsutil 대신 gcloud storage 명령 사용을 권장합니다.
+
 ## 1. 요구 사항 요약
 - GCP 프로젝트 ID (예: `stablecoin-fds`)
 - GCS 버킷 2개
@@ -13,6 +32,21 @@
   - BigQuery: `roles/bigquery.user`, `roles/bigquery.jobUser`, (데이터셋에) `roles/bigquery.dataEditor`
   - GCS: (버킷에) `roles/storage.objectAdmin` 또는 최소 `roles/storage.objectCreator`
 - 리전 일치: BigQuery 데이터셋과 GCS 버킷은 같은 location 사용 권장(예: `US`)
+
+## 1-1. 콘솔에서 초기 설정(웹)
+1) 프로젝트 생성: Cloud Console → IAM & Admin → Create Project → 이름/조직 선택
+2) 결제 연결: Billing → 프로젝트에 결제 계정 연결(필수)
+3) API 활성화: APIs & Services → Enable APIs
+   - BigQuery API, Cloud Storage API 활성화
+4) IAM 권한 부여(최소 권한): IAM → 멤버/서비스 계정에 아래 롤 부여
+   - `roles/bigquery.user`, `roles/bigquery.jobUser`
+   - (데이터셋 단위) `roles/bigquery.dataEditor`
+   - (버킷 단위) `roles/storage.objectAdmin` 또는 `roles/storage.objectCreator`
+5) Cloud Storage 버킷 생성: Cloud Storage → Buckets → Create
+   - 이름: `stablecoin-fds-raw`, `stablecoin-fds-processed`
+   - Location: Dataset와 동일(예: `US`)
+6) BigQuery 데이터셋 생성: BigQuery → Create dataset
+   - ID: `stablecoin_fds`, Location: `US`
 
 ## 2. .env 변수 설정
 `.env.example`을 복사하여 `.env` 생성 후 값 입력:
@@ -27,10 +61,10 @@ BQ_DATASET=stablecoin_fds
 - 스크립트에서는 `gs://$GCS_BUCKET_RAW`, `gs://$GCS_BUCKET_PROCESSED` 형태로 사용합니다.
 
 ## 3. 리소스 생성 (예시 명령)
-- 버킷(리전: US 예시)
+- 버킷(리전: US 예시) — gcloud storage 권장
 ```bash
-gsutil mb -l US gs://stablecoin-fds-raw
-gsutil mb -l US gs://stablecoin-fds-processed
+gcloud storage buckets create gs://stablecoin-fds-raw --location=US
+gcloud storage buckets create gs://stablecoin-fds-processed --location=US
 ```
 - BigQuery 데이터셋
 ```bash
@@ -83,6 +117,10 @@ echo "SELECT TIMESTAMP('2023-01-01') ts" | \
 # 임시 테이블 → GCS Parquet 내보내기
 bq --project_id=$GCP_PROJECT extract --destination_format=PARQUET \
   ${BQ_DATASET}_temp.test_ts gs://$GCS_BUCKET_RAW/tmp/test_ts-*.parquet
+
+# (선택) 업로드/검증 예시 — gcloud storage 사용
+gcloud storage cp local.parquet gs://$GCS_BUCKET_RAW/tmp/
+gcloud storage ls gs://$GCS_BUCKET_RAW/tmp/
 ```
 
 ## 7. 자주 묻는 질문(FAQ)
