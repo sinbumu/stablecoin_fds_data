@@ -87,3 +87,21 @@ bash bin/bq_load.sh raw_token_transfers gs://$GCS_BUCKET_RAW/raw/chain=eth/token
 ## 6) 주의사항
 - 쿼리 파티션/필터 필수, Parquet 압축 권장
 - 주소 라벨은 핵심(CEX/DEX/발행사) 수기 검증
+
+## 7) 산출물 스키마(예상)
+- 표준화(`out/std/eth/*_std.parquet`)
+  - cols: `ts(UTC), chain('eth'), tx_hash, log_index, token('usdt|usdc|dai|stable'), token_address, from_addr, to_addr, amount_raw, decimals, amount_norm, block_number`
+  - 특이: `amount_norm = amount_raw / 10^decimals`, `tx_hash+log_index` 유일키
+- 라벨 병합(`out/labeled/eth/*_labeled.parquet`)
+  - 표준화 + `from_type, to_type` (예: CEX, DEX_POOL, DEX_ROUTER, ISSUER, USER)
+- 컨텍스트 분류(`out/classified/eth/*_classified.parquet`)
+  - 라벨 + `category(DIRECT_TRANSFER|DEX_SWAP|DEFI_OTHER)`, `direction(P2P|DEX_IN|DEX_OUT|CEX_IN|CEX_OUT)`
+- 일별 집계(`out/agg/daily_flows.parquet`)
+  - cols: `date, chain, token, category, direction, tx_count, total_amount`
+
+## 8) 대용량 처리 옵션(누적 집계)
+원시가 수십 GB 이상이면 한 번에 합치지 말고 파일 단위로 부분 집계→누적 병합 권장. `bin/process_all_incremental.sh` 사용.
+
+```bash
+bash bin/process_all_incremental.sh
+```
