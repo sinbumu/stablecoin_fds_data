@@ -95,7 +95,7 @@ bash bin/bq_load.sh raw_token_transfers gs://$GCS_BUCKET_RAW/raw/chain=eth/token
 - 라벨 병합(`out/labeled/eth/*_labeled.parquet`)
   - 표준화 + `from_type, to_type` (예: CEX, DEX_POOL, DEX_ROUTER, ISSUER, USER)
 - 컨텍스트 분류(`out/classified/eth/*_classified.parquet`)
-  - 라벨 + `category(DIRECT_TRANSFER|DEX_SWAP|DEFI_OTHER)`, `direction(P2P|DEX_IN|DEX_OUT|CEX_IN|CEX_OUT)`
+  - 라벨 + `category(DIRECT_TRANSFER|DEX_SWAP|DEFI_OTHER|MINT|BURN)`, `direction(P2P|DEX_IN|DEX_OUT|CEX_IN|CEX_OUT|ISSUER_IN|ISSUER_OUT)`
 - 일별 집계(`out/agg/daily_flows.parquet`)
   - cols: `date, chain, token, category, direction, tx_count, total_amount`
 
@@ -125,3 +125,110 @@ bash bin/process_all_incremental.sh
   - 예: `bash bin/bq_load.sh std_token_transfers gs://$GCS_BUCKET_PROCESSED/std/chain=eth/token=*/date=*/*.parquet ts token,from_addr,to_addr`
 - gcs_sync.sh(옵션): 로컬 디렉터리 → GCS 동기화(gsutil 기반). 최신 권장은 `gcloud storage cp/rsync`.
   - 예: `gcloud storage cp out/agg/daily_flows.parquet gs://$GCS_BUCKET_PROCESSED/std/chain=eth/agg/`
+
+## 10) PLAN2(PRs/CRs) 확장 Quickstart
+
+### 10.1 구성 요소
+- UDF/헬퍼: `processing/build_udfs.sql`, `processing/build_block_helpers.sql`
+- 원시 인제스트 SQL:
+  - 체인링크: `ingest/bigquery/sql/eth_chainlink_prices_raw.sql` → `fact_oracle_prices_raw`
+  - Uniswap v3: `ingest/bigquery/sql/eth_uniswap_v3_swaps_raw.sql` → `fact_univ3_swaps_raw`
+  - 동결 이벤트: `ingest/bigquery/sql/eth_freeze_events.sql` → `fact_freeze_events`
+- 디코딩/뷰: `processing/build_decoded_prs.sql`, `processing/build_prs_crs_view.sql`
+- 실행기(초안): `processing/plan2_run.py`
+
+### 10.2 토픽 해시/ABI 주입값(필수)
+- 이벤트의 topic0는 "이벤트 시그니처 문자열"의 Keccak-256입니다.
+  - 예시 계산(Python web3):
+    ```bash
+    python3 - <<'PY'
+from eth_utils import keccak
+def h(s):
+    print('0x'+keccak(text=s).hex())
+print('Chainlink AnswerUpdated:', end=' '); h('AnswerUpdated(int256,uint256,uint256)')
+print('UniswapV3 Swap:', end=' '); h('Swap(address,address,int256,int256,uint160,uint128,int24)')
+print('USDC Blacklisted:', end=' '); h('Blacklisted(address)')
+print('USDC UnBlacklisted:', end=' '); h('UnBlacklisted(address)')
+print('USDT AddedBlackList:', end=' '); h('AddedBlackList(address)')
+print('USDT RemovedBlackList:', end=' '); h('RemovedBlackList(address)')
+print('USDT DestroyedBlackFunds:', end=' '); h('DestroyedBlackFunds(address,uint256)')
+PY
+    ```
+- 실행 시 아래 파라미터를 채워 전달하세요:
+  - 체인링크: `answer_updated_topic=0x...`, `feed_addresses=[...]` (configs/oracle_feeds.yaml 참고)
+  - Uniswap v3: `univ3_swap_topic=0x...`, `target_pools=[...]` (configs/dex_pools.yaml 참고)
+  - 동결/블랙리스트: `freeze_event_topics=[0x...,0x...,...]`, `usdc_addr`, `usdt_addr`
+- 권장 원칙
+  - 블록 정합: 조인 시 항상 `ON fact.block_number <= t.block_number` (미래 누수 방지)
+  - 오프체인→블록 매핑: `stablecoin_fds.block_at_or_before(ts)` 사용(직전 블록)
+
+### 10.3 실행 예시
+```bash
+# 1) UDF/블록 헬퍼 등록
+bq --project_id="$GCP_PROJECT" query --use_legacy_sql=false < processing/build_udfs.sql
+bq --project_id="$GCP_PROJECT" query --use_legacy_sql=false < processing/build_block_helpers.sql
+
+# 2) 체인링크 원시(날짜/토픽/피드 주소 지정)
+bq query --use_legacy_sql=false \
+  --parameter feed_addresses:ARRAY<STRING>:0x8fffffd4afb6115b954bd326cbe7b4ba576818f6,0x3e7d1eab13ad0104d2750b8863b489d65364e32d \
+  --parameter answer_updated_topic:STRING:0x... \
+  --parameter date_start:DATE:2023-01-01 --parameter date_end:DATE:2025-12-31 \
+  < ingest/bigquery/sql/eth_chainlink_prices_raw.sql
+
+# 3) Uniswap v3 원시(스왑 토픽/풀 주소 지정)
+bq query --use_legacy_sql=false \
+  --parameter target_pools:ARRAY<STRING>:0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640,0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8 \
+  --parameter univ3_swap_topic:STRING:0x... \
+  --parameter date_start:DATE:2023-01-01 --parameter date_end:DATE:2025-12-31 \
+  < ingest/bigquery/sql/eth_uniswap_v3_swaps_raw.sql
+
+# 4) 동결/블랙리스트(USDC/USDT 주소/토픽 지정)
+bq query --use_legacy_sql=false \
+  --parameter usdc_addr:STRING:0xA0b86991c6218b36c1d19d4a2e9Eb0cE3606eB48 \
+  --parameter usdt_addr:STRING:0xdAC17F958D2ee523a2206206994597C13D831ec7 \
+  --parameter freeze_event_topics:ARRAY<STRING>:0x...,0x...,0x... \
+  --parameter date_start:DATE:2023-01-01 --parameter date_end:DATE:2025-12-31 \
+  < ingest/bigquery/sql/eth_freeze_events.sql
+
+# 5) 디코딩/뷰(초기 스켈레톤)
+bq --project_id="$GCP_PROJECT" query --use_legacy_sql=false < processing/build_decoded_prs.sql
+bq --project_id="$GCP_PROJECT" query --use_legacy_sql=false < processing/build_prs_crs_view.sql
+
+# (옵션) 전체 실행기
+python3 processing/plan2_run.py --date-start 2023-01-01 --date-end 2025-12-31
+```
+
+### 10.4 유의사항(쿼리 비용/정합)
+- 모든 쿼리에 날짜/블록 파티션 필터 필수(`require_partition_filter=true` 권장)
+- 원시→디코딩→피처 3계층으로 CTAS 분리(성능/재현성)
+- 주소 비교는 소문자 기준(LOWER) 통일
+
+### 10.5 zsh/ bash 파라미터 주입 주의(중요)
+- zsh에선 `ARRAY<STRING>`의 `<`가 리다이렉션으로 오인될 수 있습니다. 아래처럼 타입+값 전체를 작은따옴표로 감싸고, 값(변수)은 큰따옴표로 치환하세요.
+```bash
+# 예: FEEDS/POOLS/FREEZE 는 JSON 배열 문자열
+bq --project_id="$GCP_PROJECT" query --use_legacy_sql=false \
+  --parameter='feed_addresses:ARRAY<STRING>:'"$FEEDS" \
+  --parameter='answer_updated_topic:STRING:'"$ANSWER_TOPIC" \
+  --parameter='date_start:DATE:'"$DATE_START" \
+  --parameter='date_end:DATE:'"$DATE_END" \
+  < ingest/bigquery/sql/eth_chainlink_prices_raw.sql
+```
+
+### 10.6 결과 테이블 빠른 점검(bq CLI)
+```bash
+# 체인링크 원시
+bq query --use_legacy_sql=false \
+  "SELECT COUNT(*) n FROM \`$BQ_DATASET.fact_oracle_prices_raw\` \
+   WHERE block_timestamp_utc BETWEEN TIMESTAMP('$DATE_START') AND TIMESTAMP('$DATE_END')"
+
+# Uniswap v3 원시
+bq query --use_legacy_sql=false \
+  "SELECT COUNT(*) n FROM \`$BQ_DATASET.fact_univ3_swaps_raw\` \
+   WHERE block_timestamp_utc BETWEEN TIMESTAMP('$DATE_START') AND TIMESTAMP('$DATE_END')"
+
+# 동결/블랙리스트 원시
+bq query --use_legacy_sql=false \
+  "SELECT COUNT(*) n FROM \`$BQ_DATASET.fact_freeze_events\` \
+   WHERE block_timestamp_utc BETWEEN TIMESTAMP('$DATE_START') AND TIMESTAMP('$DATE_END')"
+```

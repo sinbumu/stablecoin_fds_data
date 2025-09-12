@@ -1,0 +1,5 @@
+uniswap_v3_pools:
+  usdc_eth_005: { address: "0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640", fee: 500,  token0: "USDC", decimals0: 6, token1: "ETH", decimals1: 18 }
+  usdc_eth_030: { address: "0x8ad599c3a0ff1de082011efddc58f1908eb6e6d8", fee: 3000, token0: "USDC", decimals0: 6, token1: "ETH", decimals1: 18 }
+  dai_usdc_001: { address: "0x5777d92f208679db4b9778590fa3cab3ac9e2168", fee: 100,  token0: "DAI",  decimals0: 18, token1: "USDC", decimals1: 6 }
+

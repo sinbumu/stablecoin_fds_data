@@ -1,0 +1,5 @@
+ofac:
+  sdn_csv: "https://home.treasury.gov/ofac/downloads/sdn.csv"
+  consolidated_csv: "https://home.treasury.gov/ofac/downloads/consolidated/consolidated.csv"
+  poll_interval_days: 7
+
