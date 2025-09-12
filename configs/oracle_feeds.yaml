@@ -1,6 +1,7 @@
 ethereum_feeds:
-  usdc_usd: { address: "0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6", decimals: 8 }
-  usdt_usd: { address: "0x3E7d1eAB13ad0104d2750B8863b489D65364e32D", decimals: 8 }
-  dai_usd:  { address: "0xAed0c38402a5d19df6E4c03F4E2DceD6e29c1ee9", decimals: 8 }
-  eth_usd:  { address: "0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419", decimals: 8 }
+  # Aggregator addresses (not proxies)
+  usdc_usd: { address: "0xAb5c40fC42Cd89fB7065fEC1dB9Daf5cfBD51cb0", decimals: 8 }
+  usdt_usd: { address: "0x7f38c422b99075f63C9c919ECD200DF8D2E4de95", decimals: 8 }
+  dai_usd:  { address: "0x804B04176Bc926B73a612C6c8f60fA3D67fA9E7D", decimals: 8 }
+  eth_usd:  { address: "0xF79D6aFbB6dA890132F9D7c355e3015f15F3406F", decimals: 8 }
 

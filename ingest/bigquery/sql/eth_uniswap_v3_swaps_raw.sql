@@ -10,7 +10,9 @@ SELECT
   l.block_number,
   b.timestamp AS block_timestamp_utc,
   l.transaction_hash AS tx_hash,
-  l.log_index
+  l.log_index,
+  l.topics AS topics,
+  l.data AS data
 FROM `bigquery-public-data.crypto_ethereum.logs` l
 JOIN `bigquery-public-data.crypto_ethereum.blocks` b
   ON b.number = l.block_number

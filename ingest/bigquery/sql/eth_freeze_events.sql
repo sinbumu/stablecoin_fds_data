@@ -5,6 +5,7 @@
 --   date_start: DATE
 --   date_end: DATE
 
+CREATE OR REPLACE TABLE `stablecoin_fds.fact_freeze_events` AS
 SELECT
   l.address AS token_contract,
   l.topics[SAFE_OFFSET(0)] AS event_sig,
