@@ -102,6 +102,10 @@ python3 processing/upload_to_bq.py \
 # 표준화 포함 시: --upload classified agg std
 ```
 
+- 로드 결과(확인됨):
+  - `$BQ_DATASET.classified_transfers`: 301,391,292 행
+  - `$BQ_DATASET.daily_flows`: 985 행
+
 ## 8) 현재 상태 요약
 - 표준화/라벨/분류 산출물: 파티션 파일 다수(예: 각 ~1,500개)
 - 일별 집계: `out/agg/daily_flows.parquet` 최신화
