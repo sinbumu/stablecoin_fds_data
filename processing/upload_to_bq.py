@@ -25,7 +25,11 @@ def main() -> None:
 
     # classified uploads
     if "classified" in args.upload:
-        uri = f"gs://{args.bucket}/{args.prefix}/classified/*.parquet"
+        # 1) 로컬 => GCS 업로드
+        gcs_dir = f"gs://{args.bucket}/{args.prefix}/classified/"
+        run(["gcloud","storage","cp","out/classified/eth/*_classified.parquet", gcs_dir])
+        # 2) BigQuery 로드
+        uri = f"{gcs_dir}*.parquet"
         run([
             "bash","bin/bq_load.sh",
             "classified_transfers",
@@ -52,9 +56,11 @@ def main() -> None:
 
     # std uploads (optional, heavy)
     if "std" in args.upload:
-        uri = f"gs://{args.bucket}/{args.prefix}/std/eth/*.parquet"
-        # 선택: 로컬 std를 먼저 업로드
-        # gcloud storage cp -r out/std/eth/*.parquet gs://$bucket/$prefix/std/eth/
+        # 1) 로컬 => GCS 업로드
+        gcs_dir = f"gs://{args.bucket}/{args.prefix}/std/eth/"
+        run(["gcloud","storage","cp","out/std/eth/*_std.parquet", gcs_dir])
+        # 2) BigQuery 로드
+        uri = f"{gcs_dir}*.parquet"
         run([
             "bash","bin/bq_load.sh",
             "std_token_transfers",

@@ -18,10 +18,9 @@ else
   echo "[warn] agg missing: out/agg/daily_flows.parquet"
 fi
 
-# 샘플 파일 목록 준비
-mapfile -t CLS_FILES < <(ls -1 out/classified/eth/*_classified.parquet 2>/dev/null | head -n ${SAMPLE})
-if [ ${#CLS_FILES[@]} -eq 0 ]; then
-  echo "[warn] no classified sample files"
+# 분류 파일 존재 확인 (macOS bash 호환)
+if [ "${CLS_N}" -eq 0 ]; then
+  echo "[warn] no classified files found"
   exit 0
 fi
 
@@ -67,14 +66,27 @@ for p in cls_files[:2]:
 # 집계 대조(표본 기간 상위 7일)
 if os.path.exists('out/agg/daily_flows.parquet'):
     agg = pd.read_parquet('out/agg/daily_flows.parquet')
-    grp = df.assign(date=dts.dt.date).groupby(['date','chain','token','category','direction'], dropna=False).agg(
+    grp = df.assign(date=dts.dt.date).groupby(
+        ['date','chain','token','category','direction'], dropna=False, observed=False
+    ).agg(
         tx_count=('tx_hash','nunique'), total_amount=('amount_norm','sum')
     ).reset_index()
     merged = grp.merge(agg, on=['date','chain','token','category','direction'], how='left', suffixes=('_calc','_agg'))
-    mism = (merged['tx_count_calc']!=merged['tx_count']) | ((merged['total_amount_calc']-merged['total_amount']).abs()>1e-6)
+    # 표본 vs 전체는 값이 다를 수 있음(자연스러움). 대신 단조성 위반 여부를 점검.
+    mism = ((merged['tx_count_calc']!=merged['tx_count_agg']) | ((merged['total_amount_calc']-merged['total_amount_agg']).abs()>1e-6))
+    missing = merged['tx_count_agg'].isna().sum()
+    violations = (merged['tx_count_agg'].notna() & (
+        (merged['tx_count_calc']>merged['tx_count_agg']) |
+        ((merged['total_amount_calc']-merged['total_amount_agg'])>1e-6)
+    ))
     print("[agg-compare] sample rows:")
     print(merged.head(10))
-    print("[agg-compare] mismatches:", int(mism.sum()))
+    print("[agg-compare] sample_vs_global_differences:", int(mism.fillna(True).sum()))
+    print("[agg-compare] missing_keys_in_global:", int(missing))
+    print("[agg-compare] monotonic_violations(sample>global):", int(violations.sum()))
+    if int(violations.sum())>0:
+        print("[agg-compare] top violations:")
+        print(merged.loc[violations, ['date','token','category','direction','tx_count_calc','tx_count_agg','total_amount_calc','total_amount_agg']].head(5))
 else:
     print('[agg-compare] agg file not found')
 PY
