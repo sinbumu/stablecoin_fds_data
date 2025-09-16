@@ -27,33 +27,33 @@ RETURNS STRING AS (
 );
 
 CREATE OR REPLACE FUNCTION `stablecoin_fds.udf_uint256_slot`(data BYTES, slot INT64)
-RETURNS BIGNUMERIC
+RETURNS STRING
 LANGUAGE js AS r"""
   if (!data) return null;
-  const buf = data;  // Uint8Array
   const start = Number(slot) * 32;
   const end = start + 32;
-  const slice = buf.slice(start, end);
+  const slice = data.substring(start, end); // BYTES as JS string
+  if (slice.length !== 32) return null;
   let hex = '0x';
   for (let i=0;i<slice.length;i++) {
-    const v = slice[i].toString(16).padStart(2,'0');
+    const v = slice.charCodeAt(i).toString(16).padStart(2,'0');
     hex += v;
   }
   return BigInt(hex).toString();
 """;
 
 CREATE OR REPLACE FUNCTION `stablecoin_fds.udf_int256_slot`(data BYTES, slot INT64)
-RETURNS BIGNUMERIC
+RETURNS STRING
 LANGUAGE js AS r"""
   if (!data) return null;
   const start = Number(slot) * 32;
   const end = start + 32;
-  const slice = data.slice(start, end);
+  const slice = data.substring(start, end); // BYTES as JS string
   if (slice.length !== 32) return null;
   // Interpret as two's complement signed 256-bit integer
-  const negative = (slice[0] & 0x80) !== 0;
+  const negative = (slice.charCodeAt(0) & 0x80) !== 0;
   let hex = '0x';
-  for (let i=0;i<slice.length;i++) hex += slice[i].toString(16).padStart(2,'0');
+  for (let i=0;i<slice.length;i++) hex += slice.charCodeAt(i).toString(16).padStart(2,'0');
   let bi = BigInt(hex);
   if (negative) {
     const two256 = (1n << 256n);

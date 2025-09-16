@@ -14,6 +14,8 @@
 - Uniswap v3 노멀라이즈 뷰: 생성(`stablecoin_fds.view_univ3_swaps_norm`) — amount0/1 부호, sqrtPriceX96, liquidity, tick 디코드 및 price_token1_per_token0 포함
 - Uniswap v3 화이트리스트 테이블/뷰: 생성(`stablecoin_fds.univ3_pool_whitelist`, `stablecoin_fds.view_univ3_swaps_norm_stable`)
 - Freeze 타임라인/스냅샷: 생성(`stablecoin_fds.view_freeze_timeline`, `stablecoin_fds.view_freeze_snapshot_latest`)
+- 체인링크 디코딩: 완료(`stablecoin_fds.fact_oracle_prices`) — rows: 1,984 (min_ts=2020-02-22, max_ts=2025-09-08)
+- Uniswap v3 USD 뷰: 생성(`stablecoin_fds.view_univ3_swaps_usd`) — 가까운 시점 체인링크 가격 조인 방식 적용
 
 ## 2) 주요 이슈/해결
 - ARRAY 파라미터 주입(zsh) 문제 → `--parameter='타입:'"$VAR"` 패턴으로 해결(JSON 배열은 변수로)

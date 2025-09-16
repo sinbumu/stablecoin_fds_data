@@ -11,8 +11,8 @@ WITH base AS (
     topics,
     data,
     -- Decode amounts and sqrtPriceX96 from log data
-    CAST(`stablecoin_fds.udf_int256_slot`(`stablecoin_fds.udf_hex_to_bytes`(data), 0) AS BIGNUMERIC) AS amount0,
-    CAST(`stablecoin_fds.udf_int256_slot`(`stablecoin_fds.udf_hex_to_bytes`(data), 1) AS BIGNUMERIC) AS amount1,
+    SAFE_CAST(`stablecoin_fds.udf_int256_slot`(`stablecoin_fds.udf_hex_to_bytes`(data), 0) AS BIGNUMERIC) AS amount0,
+    SAFE_CAST(`stablecoin_fds.udf_int256_slot`(`stablecoin_fds.udf_hex_to_bytes`(data), 1) AS BIGNUMERIC) AS amount1,
     CAST(`stablecoin_fds.udf_uint256_slot`(`stablecoin_fds.udf_hex_to_bytes`(data), 2) AS BIGNUMERIC) AS sqrtPriceX96,
     CAST(`stablecoin_fds.udf_uint256_slot`(`stablecoin_fds.udf_hex_to_bytes`(data), 3) AS BIGNUMERIC) AS liquidity,
     CAST(`stablecoin_fds.udf_int256_slot`(`stablecoin_fds.udf_hex_to_bytes`(data), 4) AS BIGNUMERIC) AS tick

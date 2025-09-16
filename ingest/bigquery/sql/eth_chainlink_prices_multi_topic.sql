@@ -15,7 +15,11 @@ WITH aggs AS (
     l.transaction_hash AS tx_hash,
     l.log_index,
     l.topics[SAFE_OFFSET(0)] AS topic0,
-    l.data
+    l.data AS data,
+    CASE 
+      WHEN REGEXP_CONTAINS(l.data, r'^0x[0-9A-Fa-f]*$') THEN FROM_HEX(SUBSTR(l.data, 3))
+      ELSE NULL
+    END AS data_bytes
   FROM `bigquery-public-data.crypto_ethereum.logs` l
   JOIN aggs ON LOWER(l.address) = aggs.agg
   JOIN `bigquery-public-data.crypto_ethereum.blocks` b
