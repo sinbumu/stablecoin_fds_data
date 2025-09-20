@@ -1,5 +1,5 @@
 -- Build proxy→aggregator timeline from AggregatorUpdated events
--- Params: proxies ARRAY<STRING>, agg_updated_topic STRING
+-- Params: proxies ARRAY<STRING>, agg_updated_topic STRING, date_start DATE, date_end DATE
 
 CREATE OR REPLACE TABLE `stablecoin_fds.chainlink_proxy_aggregator_timeline` AS
 WITH updates AS (
@@ -7,12 +7,11 @@ WITH updates AS (
     LOWER(l.address) AS proxy,
     CONCAT('0x', SUBSTR(l.topics[SAFE_OFFSET(2)], 27)) AS aggregator,
     l.block_number,
-    b.timestamp AS block_timestamp_utc
+    l.block_timestamp AS block_timestamp_utc
   FROM `bigquery-public-data.crypto_ethereum.logs` l
-  JOIN `bigquery-public-data.crypto_ethereum.blocks` b
-    ON b.number = l.block_number
   WHERE LOWER(l.address) IN UNNEST(@proxies)
     AND l.topics[SAFE_OFFSET(0)] = @agg_updated_topic
+    AND DATE(l.block_timestamp) BETWEEN @date_start AND @date_end
 ), ordered AS (
   SELECT
     proxy,

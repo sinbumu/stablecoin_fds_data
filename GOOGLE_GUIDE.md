@@ -123,6 +123,34 @@ gcloud storage cp local.parquet gs://$GCS_BUCKET_RAW/tmp/
 gcloud storage ls gs://$GCS_BUCKET_RAW/tmp/
 ```
 
+## 6-1. 비용 통제 가이드 (필수)
+대형 쿼리는 반드시 드라이런과 최대 과금 바이트 상한으로 보호하세요.
+
+```bash
+# 권장 기본 상한(예: 2GB)
+export BQ_MAX_BYTES_BILLED=$((2*1024*1024*1024))
+
+# bq 기본 플래그
+echo "SELECT 1" | bq --project_id=$GCP_PROJECT query --use_legacy_sql=false --dry_run --format=prettyjson | cat
+
+# 저장소 제공 스크립트: bq_guard.sh (드라이런 → 상한 실행)
+bash bin/bq_guard.sh --sql processing/build_univ3_usd_view.sql \
+  --project "$GCP_PROJECT" --max-bytes "$BQ_MAX_BYTES_BILLED" --dry-run-only
+
+# 안전하면 실제 실행
+bash bin/bq_guard.sh --sql processing/build_univ3_usd_view.sql \
+  --project "$GCP_PROJECT" --max-bytes "$BQ_MAX_BYTES_BILLED"
+
+# 파이썬 러너에서도 동일 옵션 지원
+python3 processing/plan2_inject_and_run.py \
+  --date-start 2023-01-01 --date-end 2023-01-31 \
+  --dry-run-first --max-bytes-billed $BQ_MAX_BYTES_BILLED --skip-view
+```
+
+주의
+- require_partition_filter=true 테이블은 파티션 컬럼으로 반드시 범위를 제한하세요.
+- 스캔 바이트가 상한 초과 시 실행하지 마세요. 날짜 범위 축소, 주소/풀 화이트리스트, 클러스터 키 활용 등으로 재설계 후 재시도합니다.
+
 ## 7. 자주 묻는 질문(FAQ)
 - Q: “별도 credential key(키 파일)가 꼭 필요합니까?”
   - A: 로컬/도커에서 사용자 인증(`gcloud auth application-default login`)이면 키 파일 없이도 충분합니다. CI/서버는 Workload Identity Federation을 권장합니다. 키 파일은 불가피할 때만.

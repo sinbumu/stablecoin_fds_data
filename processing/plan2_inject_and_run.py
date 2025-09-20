@@ -23,24 +23,77 @@ def run(cmd: str) -> None:
     subprocess.run(cmd, shell=True, check=True)
 
 
-def bq_query_with_params(sql_path: str, params: dict[str, object]) -> None:
+def _format_bytes(num_bytes: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB", "PB"]
+    size = float(num_bytes)
+    idx = 0
+    while size >= 1024.0 and idx < len(units) - 1:
+        size /= 1024.0
+        idx += 1
+    return f"{size:.2f} {units[idx]}"
+
+
+def bq_query_with_params(
+    sql_path: str,
+    params: dict[str, object],
+    *,
+    max_bytes_billed: int | None = None,
+    dry_run_first: bool = False,
+    only_dry_run: bool = False,
+) -> None:
     sql_text = open(sql_path, "r", encoding="utf-8").read()
-    cmd: list[str] = [
+    base_cmd: list[str] = [
         "bq", "--project_id", os.environ.get("GCP_PROJECT", ""),
         "query", "--use_legacy_sql=false", "--quiet"
     ]
     # encode parameters (no extra shell quoting; provide JSON array values directly)
+    param_flags: list[str] = []
     for k, v in params.items():
         if isinstance(v, list):
-            json_array = json.dumps([str(x) for x in v])  # e.g. ["a","b"]
-            cmd += ["--parameter", f"{k}:ARRAY<STRING>:{json_array}"]
+            json_array = json.dumps([str(x) for x in v])
+            param_flags += ["--parameter", f"{k}:ARRAY<STRING>:{json_array}"]
         elif k in ("date_start", "date_end"):
-            cmd += ["--parameter", f"{k}:DATE:{v}"]
+            param_flags += ["--parameter", f"{k}:DATE:{v}"]
         else:
-            cmd += ["--parameter", f"{k}:STRING:{v}"]
-    # Pass SQL via stdin to avoid flag misparse on '--' within SQL comments
+            param_flags += ["--parameter", f"{k}:STRING:{v}"]
+
+    # Optional dry-run estimation
+    if dry_run_first or only_dry_run:
+        dr_cmd = base_cmd + ["--dry_run", "--format=prettyjson"] + param_flags
+        print(f"[dry-run] estimating bytes for {sql_path}")
+        dr = subprocess.run(dr_cmd, input=sql_text, text=True, capture_output=True)
+        if dr.returncode != 0:
+            print(dr.stdout)
+            print(dr.stderr, file=sys.stderr)
+            raise subprocess.CalledProcessError(dr.returncode, dr_cmd, dr.stdout, dr.stderr)
+        # Parse totalBytesProcessed from JSON output
+        try:
+            info = json.loads(dr.stdout)
+            # bq may return a list or a single object depending on version
+            stats = (info[0] if isinstance(info, list) else info).get("statistics", {})
+            total_bytes = int(stats.get("totalBytesProcessed", 0))
+        except Exception:
+            total_bytes = 0
+        est_cost_usd = (total_bytes / 1_000_000_000_000) * 5.0  # $5 per TB on-demand
+        print(f"[dry-run] estimated scan: {_format_bytes(total_bytes)} (~${est_cost_usd:,.2f})")
+        if max_bytes_billed is not None and total_bytes > max_bytes_billed:
+            print(
+                f"[guard] abort: estimated bytes {_format_bytes(total_bytes)} exceed limit {_format_bytes(max_bytes_billed)}",
+                file=sys.stderr,
+            )
+            if only_dry_run:
+                return
+            raise subprocess.CalledProcessError(2, dr_cmd, dr.stdout, "bytes limit exceeded")
+        if only_dry_run:
+            return
+
+    # Real execution guarded by maximum_bytes_billed
+    run_cmd = list(base_cmd)
+    if max_bytes_billed is not None:
+        run_cmd += ["--maximum_bytes_billed", str(max_bytes_billed)]
+    run_cmd += param_flags
     print(f"[run] bq query with {len(params)} params and SQL {sql_path}")
-    subprocess.run(cmd, input=sql_text, check=True, text=True)
+    subprocess.run(run_cmd, input=sql_text, check=True, text=True)
 
 
 def load_yaml(path: str) -> dict:
@@ -56,6 +109,18 @@ def main() -> None:
     ap.add_argument("--skip-univ3", action="store_true")
     ap.add_argument("--skip-freeze", action="store_true")
     ap.add_argument("--skip-view", action="store_true")
+    ap.add_argument("--dry-run-first", action="store_true", help="Estimate bytes before running queries")
+    ap.add_argument(
+        "--only-dry-run",
+        action="store_true",
+        help="Only perform dry-run estimation without executing queries",
+    )
+    ap.add_argument(
+        "--max-bytes-billed",
+        type=int,
+        default=int(os.environ.get("BQ_MAX_BYTES_BILLED", "5000000000")),
+        help="Maximum bytes billed per query (default from env BQ_MAX_BYTES_BILLED or 5GB)",
+    )
     args = ap.parse_args()
 
     # Helpers/UDFs
@@ -87,6 +152,9 @@ def main() -> None:
                     "date_start": args.date_start,
                     "date_end": args.date_end,
                 },
+                max_bytes_billed=args.max_bytes_billed,
+                dry_run_first=args.dry_run_first,
+                only_dry_run=args.only_dry_run,
             )
         except subprocess.CalledProcessError as e:
             print(f"[error] chainlink raw failed: {e}", file=sys.stderr)
@@ -102,6 +170,9 @@ def main() -> None:
                     "date_start": args.date_start,
                     "date_end": args.date_end,
                 },
+                max_bytes_billed=args.max_bytes_billed,
+                dry_run_first=args.dry_run_first,
+                only_dry_run=args.only_dry_run,
             )
         except subprocess.CalledProcessError as e:
             print(f"[error] uniswap v3 raw failed: {e}", file=sys.stderr)
@@ -118,6 +189,9 @@ def main() -> None:
                     "date_start": args.date_start,
                     "date_end": args.date_end,
                 },
+                max_bytes_billed=args.max_bytes_billed,
+                dry_run_first=args.dry_run_first,
+                only_dry_run=args.only_dry_run,
             )
         except subprocess.CalledProcessError as e:
             print(f"[error] freeze events failed: {e}", file=sys.stderr)

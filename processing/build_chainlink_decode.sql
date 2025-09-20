@@ -34,11 +34,20 @@ WITH d AS (
     ON f.aggregator = d.aggregator
 ), scaled AS (
   SELECT
-    d.*, 
+    d.*,
+    -- Build exact BIGNUMERIC scale = 10^decimals without floating conversion
     CASE WHEN d.answer_raw IS NULL THEN NULL
-         ELSE SAFE_DIVIDE(CAST(d.answer_raw AS NUMERIC), POW(10, COALESCE(d.decimals, 8))) END AS price_scaled
+         ELSE (
+           SAFE_CAST(d.answer_raw AS BIGNUMERIC) /
+           SAFE_CAST(CONCAT('1', REPEAT('0', COALESCE(d.decimals, 8))) AS BIGNUMERIC)
+         )
+    END AS price_scaled_bn
   FROM d
+), final AS (
+  SELECT
+    d.*, SAFE_CAST(price_scaled_bn AS NUMERIC) AS price_scaled
+  FROM scaled d
 )
-SELECT * FROM scaled;
+SELECT * FROM final;
 
 

@@ -66,6 +66,32 @@ bq query --use_legacy_sql=false \
   "SELECT * FROM \`$BQ_DATASET.view_freeze_snapshot_latest\` LIMIT 5"
 ```
 
+## 3-1) 비용 가드(드라이런/바이트 상한) 사용법
+대형 쿼리 실행 전 반드시 드라이런으로 스캔 바이트를 추정하고, 상한을 걸어 실행합니다.
+
+```bash
+# 환경 변수(예시): 최대 과금 바이트 2GB
+export BQ_MAX_BYTES_BILLED=$((2*1024*1024*1024))
+
+# 1) 파이썬 러너에서 드라이런/상한 적용
+python3 processing/plan2_inject_and_run.py \
+  --date-start 2023-01-01 --date-end 2023-01-31 \
+  --dry-run-first --max-bytes-billed $BQ_MAX_BYTES_BILLED \
+  --skip-view
+
+# 2) 수동 실행 시 bq_guard.sh 사용
+bash bin/bq_guard.sh --sql processing/build_univ3_usd_view.sql \
+  --project "$GCP_PROJECT" --max-bytes "$BQ_MAX_BYTES_BILLED" --dry-run-only
+
+# 드라이런 결과가 안전하면 실제 실행
+bash bin/bq_guard.sh --sql processing/build_univ3_usd_view.sql \
+  --project "$GCP_PROJECT" --max-bytes "$BQ_MAX_BYTES_BILLED"
+```
+
+주요 규칙
+- require_partition_filter가 설정된 테이블은 반드시 파티션 컬럼으로 범위 제한을 둡니다.
+- 스캔 바이트가 상한을 넘으면 실행하지 않고 범위/필터/클러스터 키를 재검토합니다.
+
 ## 4) 다음 단계
 - 체인링크 디코딩(`processing/build_decoded_prs.sql`) 보강: feed decimals 조인 후 `price_scaled` 계산
 - `processing/build_prs_crs_view.sql` 확장: PRS 간이 지표(oracle_deviation_bps 등) 채우기

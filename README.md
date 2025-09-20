@@ -26,6 +26,25 @@
 - `ETH_USDT=0xdAC17F958D2ee523a2206206994597C13D831ec7` (6)
 - `ETH_DAI=0x6B175474E89094C44Da98b954EedeAC495271d0F` (18)
 
+### 3-1) .env 로딩 방법(택1)
+로컬 셸에서 환경변수를 간단히 올리는 방법입니다.
+
+```bash
+# 방법 A: POSIX 표준 (임시 export)
+set -a; source .env; set +a
+
+# 방법 B: xargs (빈칸/주석 제외)
+export $(grep -v '^#' .env | xargs)
+
+# 방법 C: direnv 사용 권장(자동 로드)
+brew install direnv
+echo 'use dotnev' > .envrc  # 또는: echo 'dotenv' > .envrc
+direnv allow
+
+# 확인
+echo $GCP_PROJECT $BQ_DATASET $GCS_BUCKET_RAW $GCS_BUCKET_PROCESSED
+```
+
 ## 4) 실행 절차
 사전 준비
 - GCS 버킷/BigQuery 데이터셋 생성
@@ -37,6 +56,35 @@ cp .env.example .env && vi .env
 docker compose -f docker/docker-compose.yml build
 # 주피터(옵션)
 docker compose -f docker/docker-compose.yml up -d jupyter
+```
+
+### 4-1) 로컬 파이썬(venv) 실행 가이드
+도커 대신 로컬 파이썬으로 실행하려면 가상환경을 권장합니다.
+
+```bash
+# 가상환경 생성 및 활성화
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 의존성 설치
+pip install -r requirements.txt
+
+# .env 로딩 (위 3-1 참조)
+set -a; source .env; set +a
+
+# 비용 가드 기본 상한(예: 2GB)
+export BQ_MAX_BYTES_BILLED=$((2*1024*1024*1024))
+
+# PLAN2 실행기(드라이런 먼저 권장)
+python processing/plan2_inject_and_run.py \
+  --date-start 2023-01-01 --date-end 2023-01-31 \
+  --dry-run-first --max-bytes-billed $BQ_MAX_BYTES_BILLED \
+  --skip-view
+
+# 안전하면 상한 조정 후 실제 실행
+python processing/plan2_inject_and_run.py \
+  --date-start 2023-01-01 --date-end 2025-12-31 \
+  --max-bytes-billed $((20*1024*1024*1024))
 ```
 
 과거 데이터 수집 (Ethereum)
