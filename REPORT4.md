@@ -119,3 +119,102 @@ SQL
 - 비용가드/파티션 필터 준수 재확인 [대기]
 
 
+
+### 8) 진행 로그(2025-09-24)
+
+- 인증/환경
+  - gcloud 인증 재설정 완료, `GCP_PROJECT/BQ_DATASET/BQ_MAX_BYTES_BILLED/ASOF_DATE` 환경 구성.
+  - 비용 가드: 모든 실행 `bin/bq_guard.sh` 경유, 드라이런+상한 적용.
+
+- Route B(타임라인)
+  - `processing/build_chainlink_timeline.sql`로 2023-03, 2023-01, 2023-02 범위 생성 성공.
+  - as-of(2023-03-11) 기준 `dim_oracle_feeds` 생성 시, 해당 기간에 업데이트가 적어 유의미 주소 확보가 제한적.
+
+- 옵션 A(최신/과거 as-of 주소 시드)
+  - 최신: RPC `aggregator()` 조회로 4개 프록시의 최신 애그리게이터 주소 확보/시드 → 2023-03-11 원시/디코딩 0건.
+  - 과거 as-of: Etherscan API로 2023-03-11 기준 블록(16808257)에서 각 프록시의 최근 `AggregatorUpdated` 이벤트로 집계기 추출(동일 주소 `0x304d...`) 후 시드 → 당일 원시 0건.
+
+- 원시 수집 SQL 수정
+  - `ingest/bigquery/sql/eth_chainlink_prices_multi_topic.sql`를 애그리게이터만이 아닌 프록시+애그리게이터 합집합 대상으로 수집하도록 수정.
+  - BigQuery 상호상관 서브쿼리 오류를 `JOIN addresses`로 변경하여 해결.
+  - 재실행 결과, 2023-03-11 여전히 0건.
+
+- 프록시 topic 분포 점검(2023-03)
+  - 프록시 4개 주소에서 2023-03 기간 `topic0` 분포 조회 결과, 유의미 로그 없음.
+
+결론(현 시점): 2023-03-11 하루 기준으로는 프록시/해당 as-of 애그리게이터 모두 BQ 퍼블릭 `logs`에서 이벤트가 관측되지 않았음. 토픽 필터를 제거한 채 주소 기준으로도 0건으로 확인됨.
+
+### 9) 현재 이슈와 가설
+
+- 이슈: `fact_oracle_prices_raw_all`가 2023-03-11에 0건 → `fact_oracle_prices`도 0건.
+- 가설1: 해당 날짜에 해당 애그리게이터 주소에서 이벤트가 거의 없었을 가능성 → 월/분기 범위 집계 필요.
+- 가설2: OCR계열 `NewTransmission` 등 특정 토픽이 다른 컨트랙트(예: Transmitter)에서 발생했거나, 우리가 찾은 as-of 애그리게이터 주소와 이벤트 발생 주소가 상이.
+- 가설3: 체인링크 가격 피드가 일부 구간에서 프록시/애그리게이터가 미발행(또는 다른 주소로 이관)되었을 가능성.
+
+리스크/비용 관점:
+- 월/분기 범위 스캔은 20–40GB 상회 가능 → 구간 축소/슬라이싱 필요.
+
+### 10) 재현/검증 커맨드(합의 필요)
+
+- as-of 애그리게이터(0x304d6972...)의 2023-03 토픽 분포 확인:
+```bash
+cat <<'SQL' | bash bin/bq_guard.sh --stdin --project "$GCP_PROJECT" --max-bytes "${BQ_MAX_BYTES_BILLED:-2147483648}"
+WITH aggs AS (
+  SELECT * FROM UNNEST([LOWER('0x304d69727dd28ad6e1aa2c01db301db556c7b725')]) AS addr
+)
+SELECT l.topics[SAFE_OFFSET(0)] AS topic0, COUNT(*) n
+FROM `bigquery-public-data.crypto_ethereum.logs` l
+JOIN aggs a ON LOWER(l.address)=a.addr
+WHERE DATE(l.block_timestamp) BETWEEN DATE '2023-03-01' AND DATE '2023-03-31'
+GROUP BY topic0 ORDER BY n DESC LIMIT 50;
+SQL
+```
+
+- 최신 애그리게이터 4개(참고용)의 2023-03 토픽 분포:
+```bash
+cat <<'SQL' | bash bin/bq_guard.sh --stdin --project "$GCP_PROJECT" --max-bytes "${BQ_MAX_BYTES_BILLED:-2147483648}"
+WITH aggs AS (
+  SELECT * FROM UNNEST([
+    LOWER('0xc9e1a09622afdb659913fefe800feae5dbbfe9d7'),
+    LOWER('0x0d5f4aadf3fde31bbb55db5f42c080f18ad54df5'),
+    LOWER('0x709783ab12b65fd6cd948214eee6448f3bdd72a3'),
+    LOWER('0x7d4e742018fb52e48b08be73d041c18b21de6fb5')
+  ]) AS addr
+)
+SELECT l.topics[SAFE_OFFSET(0)] AS topic0, COUNT(*) n
+FROM `bigquery-public-data.crypto_ethereum.logs` l
+JOIN aggs a ON LOWER(l.address)=a.addr
+WHERE DATE(l.block_timestamp) BETWEEN DATE '2023-03-01' AND DATE '2023-03-31'
+GROUP BY topic0 ORDER BY n DESC LIMIT 50;
+SQL
+```
+
+- 애그리게이터 대상, 토픽 필터 없이 2023-03-11 하루 샘플 수집(이미 시도, 0건 재현 확인용):
+```bash
+cat <<'SQL' | bash bin/bq_guard.sh --stdin --project "$GCP_PROJECT" --max-bytes "${BQ_MAX_BYTES_BILLED:-2147483648}"
+CREATE OR REPLACE TABLE `stablecoin_fds.fact_oracle_prices_raw_all` AS
+WITH aggs AS (
+  SELECT DISTINCT LOWER(aggregator) AS addr FROM `stablecoin_fds.dim_oracle_feeds`
+)
+SELECT
+  l.address AS feed_address,
+  l.block_number,
+  l.block_timestamp AS block_timestamp_utc,
+  l.transaction_hash AS tx_hash,
+  l.log_index,
+  l.topics[SAFE_OFFSET(0)] AS topic0,
+  l.data AS data,
+  CASE WHEN REGEXP_CONTAINS(l.data, r'^0x[0-9A-Fa-f]*$') THEN FROM_HEX(SUBSTR(l.data, 3)) END AS data_bytes
+FROM `bigquery-public-data.crypto_ethereum.logs` l
+JOIN aggs a ON LOWER(l.address)=a.addr
+WHERE DATE(l.block_timestamp)=DATE '2023-03-11';
+SQL
+```
+
+### 11) 다음 액션(제안)
+
+- A1. 위 토픽 분포 쿼리 결과를 바탕으로 실제 사용 토픽 식별 후, 디코딩 UDF/뷰 업데이트(`AnswerUpdated`/`NewTransmission` 등 다중 지원).
+- A2. 2023-03 월 전체에 대해 애그리게이터 주소 원시 수집(토픽 무제한) 후, 일 단위 분포로 존재 여부 확인. 비용 초과 시 1주/반월로 슬라이스.
+- A3. 필요 시 2022-12 ~ 2023-04 범위까지 확장 스캔(분기 단위), 드라이런으로 상한 확인 후 실행.
+- A4. 결과 유무에 따라 `dim_oracle_feeds`를 as-of(타임라인) 기반으로 재구성하고 `fact_oracle_prices` 빌드 재시도.
+- A5. 진행 내용과 쿼리/근거를 `REPORT3.md`/`SCHEMA.md`에도 반영.
